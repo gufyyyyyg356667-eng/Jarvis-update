@@ -1539,6 +1539,8 @@ export function useBrain() {
   const cancelListenRef = useRef(null);
   const startListenRef = useRef(null);
   const liveVoiceRef = useRef(null); // LiveVoiceSession: full voice-to-voice conversation
+  const startLiveVoiceRef = useRef(null);
+  const stopLiveVoiceRef = useRef(null);
   const liveIdleRef = useRef(undefined);
   const liveUserRef = useRef(null);
   // True from a "Hey Jarvis" until the user goes quiet: follow-up turns open the mic
@@ -1586,7 +1588,7 @@ export function useBrain() {
           if (!busyRef.current && !listeningRef.current) void startListenRef.current?.();
         }, 400);
       }
-    }, [beginChat],
+    }, [beginChat, speakOut],
   );
 
   const checkWorkflowTask = useCallback(async (task) => {
@@ -2209,11 +2211,11 @@ export function useBrain() {
     setMutedState(v);
     if (v) stopOut(); // muting mid-sentence cuts current speech
     liveVoiceRef.current?.setMuted(v);
-  }, []);
+  }, [stopOut]);
   const stopSpeech = useCallback(() => {
     stopOut();
     setStatus("idle");
-  }, []);
+  }, [stopOut]);
 
   // Cross-app floating STOP: visible under the exact same condition as the in-app
   // banner (App.jsx), but backed by a native overlay so it still shows while some
@@ -2320,6 +2322,9 @@ export function useBrain() {
   };
 
   // ── Voice input (push-to-talk → mic → Groq Whisper → brain) ────────────────
+  startLiveVoiceRef.current = startLiveVoice;
+  stopLiveVoiceRef.current = stopLiveVoice;
+
   // Speech input is the live Gemini conversation. Tapping the mic starts it, and a
   // second tap (or silence in the session) ends it.
   const startListen = useCallback(async () => {
@@ -2328,11 +2333,11 @@ export function useBrain() {
       pushWarning("Voice needs a Gemini API key. Add one in Settings.");
       return false;
     }
-    return startLiveVoice();
+    return startLiveVoiceRef.current?.();
   }, [stored.geminiKey, pushWarning]);
 
   const cancelListen = useCallback(async () => {
-    if (liveVoiceRef.current) stopLiveVoice();
+    if (liveVoiceRef.current) stopLiveVoiceRef.current?.();
     if (!busyRef.current) setStatus("idle");
   }, []);
 
@@ -2348,7 +2353,7 @@ export function useBrain() {
   };
 
   const finishListen = useCallback(async () => {
-    if (liveVoiceRef.current) stopLiveVoice();
+    if (liveVoiceRef.current) stopLiveVoiceRef.current?.();
   }, []);
 
   // startListen's and the wake session's stop paths need these, defined after them.
@@ -2362,7 +2367,7 @@ export function useBrain() {
 
   // Tap-to-talk: first tap starts the conversation, the next tap ends it.
   const triggerListen = useCallback(() => {
-    if (liveVoiceRef.current) stopLiveVoice();
+    if (liveVoiceRef.current) stopLiveVoiceRef.current?.();
     else void startListen();
   }, [startListen]);
 
@@ -2403,12 +2408,12 @@ export function useBrain() {
             onCommand: (text) => {
               setWakeTriggered((n) => n + 1);
               wakeSessionRef.current = true;
-              void startLiveVoice(text);
+              void startLiveVoiceRef.current?.(text);
             },
             onWakeOnly: () => {
               setWakeTriggered((n) => n + 1);
               wakeSessionRef.current = true;
-              void startLiveVoice("The user just said your name. Reply with one short word such as 'Yes?' and wait for them to speak.");
+              void startLiveVoiceRef.current?.("The user just said your name. Reply with one short word such as 'Yes?' and wait for them to speak.");
             },
             onError: (msg) => pushWarning(`Wake word: ${msg}`),
             onFatal: (msg) => pushWarning(`“Hey Jarvis” stopped: ${msg}`),
