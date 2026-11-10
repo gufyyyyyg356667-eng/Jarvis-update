@@ -386,7 +386,7 @@ let currentSig: string | null = null;
 
 /** Cheap, non-secret signature of the config that would change the engine. */
 function sigOf(opts: WakeWordOpts): string {
-  const s = `${opts.groqKey || ""} ${opts.vertexSaJson || ""}`;
+  const s = `${opts.geminiKey || ""}`;
   let h = 5381;
   for (let i = 0; i < s.length; i += 1) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
   return String(h >>> 0);
@@ -400,7 +400,7 @@ function sigOf(opts: WakeWordOpts): string {
  */
 export function syncWakeWord(opts: WakeWordOpts | null): void {
   if (!inTauri()) return;
-  if (!opts || (!(opts.groqKey || "").trim() && !(opts.vertexSaJson || "").trim())) {
+  if (!opts || !(opts.geminiKey || "").trim()) {
     if (current) {
       current.stop();
       current = null;
