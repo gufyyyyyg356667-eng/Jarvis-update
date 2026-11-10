@@ -3,7 +3,7 @@ import { androidGestureHost } from "./androidHost";
 import { defaults, type Action } from "./engine";
 
 vi.mock("../brain/platform", () => ({ androidPlatform: {} }));
-vi.mock("../brain/platform/webspeech", () => ({ webSpeechTTS: {} }));
+vi.mock("../brain/platform/voice/geminiSpeak", () => ({ speakReply: vi.fn(async () => {}) }));
 vi.mock("../brain/schedule/routines", () => ({ listRoutines: vi.fn(), routineTurn: vi.fn() }));
 
 describe("phone gesture actions", () => {
