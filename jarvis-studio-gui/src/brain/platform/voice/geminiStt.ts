@@ -17,13 +17,15 @@ interface GeminiTextResponse {
   candidates?: { content?: { parts?: { text?: string }[] } }[];
 }
 
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result).split(",")[1] ?? "");
-    r.onerror = () => reject(new Error("Could not read the recording."));
-    r.readAsDataURL(blob);
-  });
+async function blobToBase64(blob: Blob): Promise<string> {
+  // arrayBuffer() works in the phone's WebView and in Node tests alike (FileReader does not run in Node).
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
 }
 
 export async function transcribeWithGemini(blob: Blob, apiKey: string): Promise<string> {
