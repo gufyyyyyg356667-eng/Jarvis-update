@@ -1540,6 +1540,7 @@ export function useBrain() {
   const startListenRef = useRef(null);
   const liveVoiceRef = useRef(null); // LiveVoiceSession: full voice-to-voice conversation
   const startLiveVoiceRef = useRef(null);
+  const wakeWantedRef = useRef(null); // the wake listener config, so it can resume after a live session
   const stopLiveVoiceRef = useRef(null);
   const liveIdleRef = useRef(undefined);
   const liveUserRef = useRef(null);
@@ -2259,6 +2260,7 @@ export function useBrain() {
     liveUserRef.current = null;
     listeningRef.current = false;
     session?.stop();
+    syncWakeWord(wakeWantedRef.current); // the mic is free again: wake listening resumes
     setStatus("idle");
   };
   const startLiveVoice = async (initialText) => {
@@ -2307,6 +2309,7 @@ export function useBrain() {
       liveVoiceRef.current = session;
       listeningRef.current = true;
       setStatus("listening");
+      syncWakeWord(null); // the live session owns the mic; the wake listener pauses
       await session.start();
       session.setMuted(mutedRef.current);
       if (initialText) session.sendText(initialText);
@@ -2423,7 +2426,9 @@ export function useBrain() {
             onFatal: (msg) => pushWarning(`“Hey Jarvis” stopped: ${msg}`),
           }
         : null;
-    syncWakeWord(wanted);
+    wakeWantedRef.current = wanted;
+    // While a live session holds the mic, the wake listener stays off.
+    syncWakeWord(liveVoiceRef.current?.active ? null : wanted);
     return undefined; // singleton owns lifecycle across re-renders — no teardown here
   }, [alwaysOn, stored.geminiKey, sendMessage, pushWarning]);
 

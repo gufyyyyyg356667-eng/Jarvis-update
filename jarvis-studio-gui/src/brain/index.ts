@@ -526,7 +526,7 @@ export function createBrain(opts: BrainOptions = {}): Brain {
     executeAction: (spec, request) => standalone(spec, makeDeps(getConfig(), undefined, request)),
     voiceSession: async () => {
       const config = getConfig();
-      const palette = toolPalette(config, {});
+      const palette = toolPalette(config, { availability: await platform.toolAvailability?.() });
       const facts = await memory.facts("", config.vertexServiceAccountJson);
       return {
         instruction: buildSystemPrompt(config, facts, false, false, false) + VOICE_RULES,
