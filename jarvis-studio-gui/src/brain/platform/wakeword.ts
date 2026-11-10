@@ -72,9 +72,7 @@ export function commandAfterWake(text: string): string | null {
 }
 
 export interface WakeWordOpts {
-  groqKey?: string;
-  vertexSaJson?: string; // not used to transcribe (that's in `transcribe`) — only to
-  // compute the config signature so syncWakeWord() knows when to restart the engine.
+  geminiKey?: string;
   /** `prompt: ""` asks for no vocabulary prompt (the wake check needs an unbiased ear). */
   transcribe?: (blob: Blob, o?: { prompt?: string }) => Promise<string>;
   isBusy: () => boolean;
@@ -335,13 +333,13 @@ export class WakeWordListener {
 
   private transcribeBlob(blob: Blob, o?: { prompt?: string }): Promise<string> {
     if (this.opts.transcribe) return this.opts.transcribe(blob, o);
-    const key = (this.opts.groqKey || "").trim();
+    const key = (this.opts.geminiKey || "").trim();
     if (!key) {
       return Promise.reject(
-        new Error("Add a Groq API key to transcribe commands after “Hey Jarvis”."),
+        new Error("Add a Gemini API key to transcribe commands after “Hey Jarvis”."),
       );
     }
-    return transcribe(blob, { groqKey: key, ...o });
+    return transcribe(blob, { geminiKey: key, ...o });
   }
 
   /** The clip, which the engine hands over once the command has ended. */

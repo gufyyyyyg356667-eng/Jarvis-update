@@ -53,8 +53,8 @@ import { nativeTvShell, normMac, parseLink, tvAddresses } from "../brain/remote/
 import { RemoteScreen } from "../brain/remote/webrtcScreen";
 import { invoke } from "@tauri-apps/api/core";
 import { authenticate, checkStatus } from "@tauri-apps/plugin-biometric";
-import { MicRecorder, transcribe } from "../brain/platform/stt";
-import { setVoiceConfig, speakReply, stopSpeech as stopVoiceOutput, geminiVoiceOn } from "../brain/platform/voice/geminiSpeak";
+import { transcribe } from "../brain/platform/stt";
+import { setVoiceConfig, speakReply, stopSpeech as stopVoiceOutput } from "../brain/platform/voice/geminiSpeak";
 import { LiveVoiceSession, LIVE_MODEL, LIVE_VOICE } from "../brain/platform/voice/liveSession";
 import {
   normalizeWakeSensitivity,
@@ -110,7 +110,6 @@ const PROMPT_TIMEOUT_MS = 90_000;
 // Longest a single push-to-talk recording may run before it sends itself. Without
 // a ceiling a forgotten second tap leaves listeningRef true, and isBusy() reads it,
 // so "Hey Jarvis" goes quietly dead for the rest of the session.
-const MAX_LISTEN_MS = 30_000;
 
 // Automatic model fallback is routine routing, not a user-facing alert. Keep the
 // route/reason in diagnostics while real failures still use pushWarning.
@@ -1438,8 +1437,8 @@ export function useBrain() {
 
   const storedRef = useRef(stored);
   useEffect(() => {
-    setVoiceConfig({ voiceEngine: stored.voiceEngine, geminiKey: stored.geminiKey });
-  }, [stored.voiceEngine, stored.geminiKey]);
+    setVoiceConfig({ geminiKey: stored.geminiKey });
+  }, [stored.geminiKey]);
   // Voice out: Gemini speech when chosen (with device-voice fallback), else device voice.
   const speakOut = useCallback((text) => speakReply(text), []);
   const stopOut = useCallback(() => stopVoiceOutput(), []);
@@ -1484,7 +1483,6 @@ export function useBrain() {
       vertex_project: cfg.vertexProject || "",
       has_groq_key: Boolean(stored.groqKey),
       has_gemini_key: Boolean(stored.geminiKey),
-      voice_engine: stored.voiceEngine === "groq" ? "groq" : "gemini",
       has_openrouter_key: Boolean(stored.openrouterKey),
       has_mistral_key: Boolean(stored.mistralKey),
       has_nvidia_key: Boolean(stored.nvidiaKey),
@@ -1535,12 +1533,8 @@ export function useBrain() {
   // — used to gate the one-time "draw over other apps" permission prompt so it never
   // fires on the launch greeting, only after a real interaction.
   const userInteractedRef = useRef(false);
-  const micRef = useRef(null); // MicRecorder (push-to-talk)
   const listeningRef = useRef(false);
-  const listenGenerationRef = useRef(0);
-  const listenStartingRef = useRef(false);
   // Hard ceiling on one push-to-talk recording (see startListen).
-  const listenTimerRef = useRef(undefined);
   const finishListenRef = useRef(null);
   const cancelListenRef = useRef(null);
   const startListenRef = useRef(null);
@@ -1940,8 +1934,6 @@ export function useBrain() {
         if (typeof cfg.provider_mode === "string") next.providerMode = cfg.provider_mode.trim();
         if (typeof cfg.conversation_mode === "boolean")
           next.conversationMode = cfg.conversation_mode;
-        if (typeof cfg.voice_engine === "string")
-          next.voiceEngine = cfg.voice_engine === "groq" ? "groq" : "gemini";
         if (typeof cfg.calendar_sync === "boolean") next.calendarSync = cfg.calendar_sync;
         if (typeof cfg.pc_commands === "boolean") next.pcCommands = cfg.pc_commands;
         if (typeof cfg.agent_mode === "boolean") next.agentMode = cfg.agent_mode;
@@ -2328,66 +2320,20 @@ export function useBrain() {
   };
 
   // ── Voice input (push-to-talk → mic → Groq Whisper → brain) ────────────────
+  // Speech input is the live Gemini conversation. Tapping the mic starts it, and a
+  // second tap (or silence in the session) ends it.
   const startListen = useCallback(async () => {
-    if (busyRef.current || listeningRef.current || listenStartingRef.current) return false;
-    if (!stored.groqKey && !stored.vertexSaJson && !stored.geminiKey) {
-      pushWarning(
-        "Voice input needs a Gemini API key (default), a Vertex AI Service Account, or a Groq API key. Add one in Settings.",
-      );
+    if (busyRef.current || liveVoiceRef.current) return false;
+    if (!stored.geminiKey) {
+      pushWarning("Voice needs a Gemini API key. Add one in Settings.");
       return false;
     }
-    const generation = ++listenGenerationRef.current;
-    listenStartingRef.current = true;
-    if (geminiVoiceOn({ voiceEngine: stored.voiceEngine, geminiKey: stored.geminiKey })) {
-      listenStartingRef.current = false;
-      return startLiveVoice();
-    }
-    try {
-      stopOut(); // don't record JARVIS talking over you
-      if (!micRef.current) micRef.current = new MicRecorder();
-      await micRef.current.start({
-        silenceMs: 1200, // quiet this long after speaking → send by itself
-        noSpeechMs: 6000, // nothing said → drop quietly, no transcription
-        onSilence: () => void finishListenRef.current?.(),
-        onNoSpeech: () => endWakeSessionRef.current?.(),
-      });
-      if (generation !== listenGenerationRef.current) {
-        await micRef.current.stop();
-        return false;
-      }
-      listeningRef.current = true;
-      setStatus("listening");
-      // Tap-to-talk needs a second tap to send. If it never comes, listeningRef
-      // stays true — and since isBusy() reads it, "Hey Jarvis" goes silently dead
-      // for the rest of the session. Send what we have instead of hanging.
-      clearTimeout(listenTimerRef.current);
-      listenTimerRef.current = setTimeout(() => {
-        void finishListenRef.current?.();
-      }, MAX_LISTEN_MS);
-      return true;
-    } catch (e) {
-      pushWarning("Couldn't access the microphone: " + (e?.message || e));
-      listeningRef.current = false;
-      setStatus("idle");
-      return false;
-    } finally {
-      listenStartingRef.current = false;
-    }
-    // vertexSaJson is read above but was missing here, so a Vertex-only user (who
-    // never gets a Groq key) kept the pre-hydration closure all session and the mic
-    // refused to start.
-  }, [stored.groqKey, stored.vertexSaJson, stored.voiceEngine, stored.geminiKey, pushWarning, sendMessage]);
+    return startLiveVoice();
+  }, [stored.geminiKey, pushWarning]);
 
   const cancelListen = useCallback(async () => {
-    listenGenerationRef.current++;
-    clearTimeout(listenTimerRef.current);
-    const wasListening = listeningRef.current;
-    listeningRef.current = false;
     if (liveVoiceRef.current) stopLiveVoice();
-    if (wasListening && micRef.current) {
-      try { await micRef.current.stop(); } catch { /* Discard, never transcribe. */ }
-    }
-    if (wasListening && !busyRef.current) setStatus("idle");
+    if (!busyRef.current) setStatus("idle");
   }, []);
 
   // The session ends when the user goes quiet: say so, then wait for "Hey Jarvis".
@@ -2401,44 +2347,11 @@ export function useBrain() {
     }
   };
 
-  // Stop recording, transcribe, and send the recognised text as a turn.
   const finishListen = useCallback(async () => {
-    if (liveVoiceRef.current) {
-      stopLiveVoice(); // tapping while the live conversation runs ends it
-      return;
-    }
-    if (!listeningRef.current || !micRef.current) return;
-    clearTimeout(listenTimerRef.current);
-    listeningRef.current = false;
-    setStatus("thinking");
-    let blob = null;
-    try {
-      blob = await micRef.current.stop();
-    } catch {
-      /* ignore */
-    }
-    if (!blob || (!stored.groqKey && !stored.vertexSaJson && !stored.geminiKey)) {
-      setStatus("idle");
-      return;
-    }
-    try {
-      const text = await transcribe(blob, {
-        geminiKey: stored.geminiKey,
-        groqKey: stored.groqKey,
-        vertexSaJson: stored.vertexSaJson,
-      });
-      if (text) {
-        await sendMessage(text); // appends the user bubble + asks the brain
-      } else {
-        setStatus("idle");
-      }
-    } catch (e) {
-      pushWarning("Transcription failed: " + (e?.message || e));
-      setStatus("idle");
-    }
-  }, [stored.groqKey, stored.vertexSaJson, sendMessage, pushWarning]);
+    if (liveVoiceRef.current) stopLiveVoice();
+  }, []);
 
-  // startListen's auto-send timer needs finishListen, which is defined after it.
+  // startListen's and the wake session's stop paths need these, defined after them.
   useEffect(() => {
     finishListenRef.current = finishListen;
   }, [finishListen]);
@@ -2447,11 +2360,11 @@ export function useBrain() {
     startListenRef.current = startListen;
   }, [cancelListen, startListen]);
 
-  // Tap-to-talk: first tap starts listening, second tap stops + sends.
+  // Tap-to-talk: first tap starts the conversation, the next tap ends it.
   const triggerListen = useCallback(() => {
-    if (listeningRef.current) finishListen();
-    else startListen();
-  }, [startListen, finishListen]);
+    if (liveVoiceRef.current) stopLiveVoice();
+    else void startListen();
+  }, [startListen]);
 
   // ── "Hey Jarvis" wake word (on-device openWakeWord via tauri-plugin-phone) ──
   // Runs whenever the toggle is on and a transcription credential exists. The
@@ -2468,8 +2381,6 @@ export function useBrain() {
   }, []);
 
   useEffect(() => {
-    const groqKey = (stored.groqKey || "").trim();
-    const saJson = (stored.vertexSaJson || "").trim();
     // Hand the desired state to the app-global singleton (brain/platform/wakeword).
     // We deliberately do NOT create/destroy the engine here or tear it down on
     // cleanup: the wake engine is an Android foreground service meant to outlive the
@@ -2480,11 +2391,10 @@ export function useBrain() {
     // off itself when the toggle/keys go away (opts=null below).
     const gemKey = (stored.geminiKey || "").trim();
     const wanted =
-      alwaysOn && (groqKey || saJson || gemKey)
+      alwaysOn && gemKey
         ? {
-            groqKey,
-            vertexSaJson: saJson,
-            transcribe: (blob, o) => transcribe(blob, { geminiKey: gemKey, groqKey, vertexSaJson: saJson, ...o }),
+            geminiKey: gemKey,
+            transcribe: (blob, o) => transcribe(blob, { geminiKey: gemKey, ...o }),
             isBusy: () => busyRef.current || listeningRef.current,
             onStatus: (s) => {
               if (s === "listening") setStatus("listening");
@@ -2493,24 +2403,12 @@ export function useBrain() {
             onCommand: (text) => {
               setWakeTriggered((n) => n + 1);
               wakeSessionRef.current = true;
-              if (geminiVoiceOn({ voiceEngine: storedRef.current?.voiceEngine, geminiKey: gemKey })) {
-                void startLiveVoice(text);
-              } else {
-                void sendMessage(text);
-              }
+              void startLiveVoice(text);
             },
             onWakeOnly: () => {
               setWakeTriggered((n) => n + 1);
               wakeSessionRef.current = true;
-              if (geminiVoiceOn({ voiceEngine: storedRef.current?.voiceEngine, geminiKey: gemKey })) {
-                void startLiveVoice("The user just said your name. Reply with one short word such as 'Yes?' and wait for them to speak.");
-              } else {
-                setStatus("listening");
-                void (async () => {
-                  if (!mutedRef.current) await speakOut("Yes?");
-                  if (wakeSessionRef.current) void startListenRef.current?.();
-                })();
-              }
+              void startLiveVoice("The user just said your name. Reply with one short word such as 'Yes?' and wait for them to speak.");
             },
             onError: (msg) => pushWarning(`Wake word: ${msg}`),
             onFatal: (msg) => pushWarning(`“Hey Jarvis” stopped: ${msg}`),
@@ -2518,7 +2416,7 @@ export function useBrain() {
         : null;
     syncWakeWord(wanted);
     return undefined; // singleton owns lifecycle across re-renders — no teardown here
-  }, [alwaysOn, stored.groqKey, stored.vertexSaJson, sendMessage, pushWarning]);
+  }, [alwaysOn, stored.geminiKey, sendMessage, pushWarning]);
 
   // Speak a line via device TTS (unless muted). Used by the greeting + anywhere we
   // talk outside the sendMessage flow. Never gets the status stuck.

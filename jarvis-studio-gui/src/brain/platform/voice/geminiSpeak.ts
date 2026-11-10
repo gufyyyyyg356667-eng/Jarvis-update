@@ -8,7 +8,6 @@
 
 import { platformFetch } from "../../tools/httpClient";
 import { stripMarkdownForSpeech } from "../../formatting";
-import { webSpeechTTS } from "../webspeech";
 
 /** Gemini TTS model id. Verify against Google's model list before relying on it. */
 export const GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts";
@@ -90,14 +89,12 @@ export function stopGeminiSpeech(): void {
   current = null;
 }
 
-/** Stop everything JARVIS is saying, whichever voice is playing. */
+/** Stop JARVIS speaking. */
 export function stopSpeech(): void {
   stopGeminiSpeech();
-  webSpeechTTS.stop();
 }
 
 export interface VoiceConfig {
-  voiceEngine?: string;
   geminiKey?: string;
 }
 
@@ -108,23 +105,19 @@ export function setVoiceConfig(cfg: VoiceConfig): void {
   voiceConfig = cfg;
 }
 
-/** Gemini is the default voice; only an explicit "groq" choice (or no key) uses the device voice. */
-export function geminiVoiceOn(cfg: VoiceConfig = voiceConfig): boolean {
-  return cfg.voiceEngine !== "groq" && Boolean(cfg.geminiKey);
-}
-
-/** Speak a reply with Gemini when on; otherwise (or on failure) the device voice. */
+/** Speak a reply with Gemini. Failures are logged; they never break the turn. */
 export async function speakReply(text: string, cfg: VoiceConfig = voiceConfig): Promise<void> {
   const clean = stripMarkdownForSpeech(text || "");
   if (!clean) return;
-  if (geminiVoiceOn(cfg)) {
-    try {
-      const pcm = await fetchGeminiSpeech(clean, cfg.geminiKey as string);
-      await playPcm(pcm);
-      return;
-    } catch (err) {
-      console.warn("Gemini voice failed, using device voice:", err);
-    }
+  const key = (cfg.geminiKey || "").trim();
+  if (!key) {
+    console.warn("Voice output needs a Gemini API key.");
+    return;
   }
-  await webSpeechTTS.speak(clean);
+  try {
+    const pcm = await fetchGeminiSpeech(clean, key);
+    await playPcm(pcm);
+  } catch (err) {
+    console.warn("Gemini voice failed:", err);
+  }
 }

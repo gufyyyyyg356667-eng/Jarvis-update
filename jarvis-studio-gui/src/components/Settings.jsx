@@ -352,7 +352,6 @@ export default function Settings({
     sysInfo.provider_mode || (IS_MOBILE ? "auto" : "groq"),
   );
   const [wakeWordOn, setWakeWordOn] = useState(sysInfo.wake_word !== false);
-  const [geminiLiveOn, setGeminiLiveOn] = useState(sysInfo.voice_engine !== "groq");
   const [wakeSensitivity, setWakeSensitivity] = useState(
     normalizeWakeSensitivity(sysInfo.wake_sensitivity),
   );
@@ -475,7 +474,6 @@ export default function Settings({
     };
     cfg.auto_switch_models = autoSwitch;
     if (IS_MOBILE) cfg.wake_word = wakeWordOn;
-    if (IS_MOBILE) cfg.voice_engine = geminiLiveOn ? "gemini" : "groq";
     if (IS_MOBILE) cfg.wake_sensitivity = wakeSensitivity;
     if (IS_MOBILE) {
       cfg.pc_commands = pcCommands;
@@ -957,12 +955,6 @@ export default function Settings({
               checked={wakeWordOn}
               onChange={setWakeWordOn}
               hint="Listens on the phone itself. Nothing is sent until it hears the wake word."
-            />
-            <Toggle
-              label="Gemini voice"
-              checked={geminiLiveOn}
-              onChange={setGeminiLiveOn}
-              hint="Default. JARVIS listens and speaks through Gemini (needs a Gemini API key). Turn off to use Groq for listening and the device voice for speaking."
             />
             <Field label={`Wake word sensitivity: ${wakeSensitivity}`}>
               <input
