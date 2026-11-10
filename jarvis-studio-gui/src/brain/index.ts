@@ -16,6 +16,7 @@ import {
   FROM_WHATSAPP_TOOLS,
   groupOf,
   groupsFor,
+  toGeminiTools,
   toolPalette,
   turnPalette,
   toSpec,
@@ -79,6 +80,10 @@ export interface Brain {
   checkWorkflow(id: string): Promise<RecoveryReport>;
   resumeWorkflow(id: string, token: string, request?: ChatRequestContext): Promise<string>;
   executeAction(spec: ActionSpec, request?: ChatRequestContext): Promise<ToolResult>;
+  /** Live voice: the instruction and the function declarations for a Gemini Live session. */
+  voiceSession(): Promise<{ instruction: string; tools: Record<string, unknown>[] }>;
+  /** Live voice: run one function call the Live model made, through the same dispatcher. */
+  liveTool(name: string, args: Record<string, unknown>, request?: ChatRequestContext): Promise<ToolResult>;
   get config(): BrainConfig;
 }
 
@@ -519,6 +524,22 @@ export function createBrain(opts: BrainOptions = {}): Brain {
   return {
     checkWorkflow: (id) => recovery.check(id),
     executeAction: (spec, request) => standalone(spec, makeDeps(getConfig(), undefined, request)),
+    voiceSession: async () => {
+      const config = getConfig();
+      const palette = toolPalette(config, {});
+      const facts = await memory.facts("", config.vertexServiceAccountJson);
+      return {
+        instruction: buildSystemPrompt(config, facts, false, false, false) + VOICE_RULES,
+        tools: palette.length ? [{ functionDeclarations: toGeminiTools(palette) }] : [],
+      };
+    },
+    liveTool: async (name, args, request) => {
+      const config = getConfig();
+      const palette = toolPalette(config, {});
+      const refused = validateToolCall({ id: name, name, args }, palette);
+      if (refused) return refused;
+      return standalone(toSpec(name, args), makeDeps(config, undefined, request), undefined, name);
+    },
     resumeWorkflow: async (id, token, request) => {
       if (!configReady(getConfig())) throw new Error("Set up an AI provider before continuing.");
       const run = recovery.claim(id, token);
@@ -623,6 +644,15 @@ const CONVERSATION_CONTEXT =
  * and makes the decision rules concrete, so smaller chat models call tools
  * instead of narrating what they would do.
  */
+/** Added to the system prompt for live spoken turns. */
+export const VOICE_RULES = `
+
+LIVE VOICE TURN
+You are speaking out loud in a live conversation. Keep answers short and natural: one to three sentences unless the user asks for more.
+For anything about the phone, PC, TV, alarms, messages, or the web, call the matching function first. Speak only what its result says.
+Never say an action succeeded unless its function result confirms it. If a result is missing or failed, say so plainly.
+Do not read out raw data, IDs, or markdown.`;
+
 export function buildSystemPrompt(
   cfg: BrainConfig,
   facts: string[],

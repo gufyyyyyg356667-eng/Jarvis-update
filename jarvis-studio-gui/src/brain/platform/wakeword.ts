@@ -80,6 +80,8 @@ export interface WakeWordOpts {
   isBusy: () => boolean;
   onStatus?: (s: "listening" | "idle") => void;
   onCommand: (text: string) => void;
+  /** "Hey Jarvis" was heard but no command followed. */
+  onWakeOnly?: () => void;
   onError?: (msg: string) => void;
   onFatal?: (msg: string) => void;
 }
@@ -305,6 +307,8 @@ export class WakeWordListener {
       if (clean && !isNoiseTranscript(clean) && this.on) {
         this.opts.onCommand(clean);
         await this.settle();
+      } else if (this.on) {
+        this.opts.onWakeOnly?.();
       }
     } finally {
       this.handling = false;

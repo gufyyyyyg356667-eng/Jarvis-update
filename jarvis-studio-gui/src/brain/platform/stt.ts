@@ -7,6 +7,7 @@
 import { platformFetch, withRetry } from "../tools/httpClient";
 import { bytesToBase64 } from "../tools/base64";
 import { splitKeys } from "../resolveConfig";
+import { transcribeWithGemini } from "./voice/geminiStt";
 
 const GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
 // Full v3, not turbo: Groq lists 10.3% vs 12% WER, and both return a few-second
@@ -33,18 +34,32 @@ function pickRecordMime(): string {
   return "";
 }
 
+/** Optional end-of-speech detection so a turn ends by itself, without a second tap. */
+export interface AutoStopOptions {
+  /** Quiet this long after speech ends the turn. */
+  silenceMs?: number;
+  /** Give up (no speech at all) after this long. */
+  noSpeechMs?: number;
+  /** RMS level (0..1) that counts as speech. */
+  threshold?: number;
+  onSilence?: () => void;
+  onNoSpeech?: () => void;
+}
+
 /** Records a single push-to-talk turn from the microphone. */
 export class MicRecorder {
   private recorder: MediaRecorder | null = null;
   private stream: MediaStream | null = null;
   private chunks: Blob[] = [];
+  private monitor: ReturnType<typeof setInterval> | null = null;
+  private audioCtx: AudioContext | null = null;
 
   get recording(): boolean {
     return this.recorder?.state === "recording";
   }
 
   /** Begin capturing. Throws if mic permission is denied / unavailable. */
-  async start(): Promise<void> {
+  async start(auto?: AutoStopOptions): Promise<void> {
     if (this.recording) return;
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     this.chunks = [];
@@ -56,6 +71,60 @@ export class MicRecorder {
       if (e.data && e.data.size > 0) this.chunks.push(e.data);
     };
     this.recorder.start(250);
+    this.startMonitor(auto);
+  }
+
+  /** Watch the mic level with Web Audio; fires once when speech is followed by silence. */
+  private startMonitor(auto?: AutoStopOptions): void {
+    if (!auto || !this.stream || typeof AudioContext === "undefined") return;
+    const silenceMs = auto.silenceMs ?? 1200;
+    const noSpeechMs = auto.noSpeechMs ?? 6000;
+    const threshold = auto.threshold ?? 0.02;
+    try {
+      const ctx = new AudioContext();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      ctx.createMediaStreamSource(this.stream).connect(analyser);
+      this.audioCtx = ctx;
+      const buf = new Uint8Array(analyser.fftSize);
+      const started = Date.now();
+      let heard = false;
+      let lastLoud = 0;
+      this.monitor = setInterval(() => {
+        analyser.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) {
+          const v = (buf[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / buf.length);
+        const now = Date.now();
+        if (rms >= threshold) {
+          heard = true;
+          lastLoud = now;
+        }
+        if (heard && now - lastLoud >= silenceMs) {
+          this.stopMonitor();
+          auto.onSilence?.();
+        } else if (!heard && now - started >= noSpeechMs) {
+          this.stopMonitor();
+          auto.onNoSpeech?.();
+        }
+      }, 100);
+    } catch {
+      // No Web Audio here: the turn still ends on a second tap or the listen ceiling.
+    }
+  }
+
+  private stopMonitor(): void {
+    if (this.monitor) {
+      clearInterval(this.monitor);
+      this.monitor = null;
+    }
+    if (this.audioCtx) {
+      void this.audioCtx.close().catch(() => {});
+      this.audioCtx = null;
+    }
   }
 
   /** Stop and return the recorded audio (or null if nothing captured). */
@@ -92,6 +161,7 @@ export class MicRecorder {
   }
 
   private cleanup(): void {
+    this.stopMonitor();
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
     this.recorder = null;
@@ -199,15 +269,25 @@ export async function transcribeWithVertex(
  */
 export async function transcribe(
   blob: Blob,
-  keys: { groqKey?: string; vertexSaJson?: string; prompt?: string },
+  keys: { geminiKey?: string; groqKey?: string; vertexSaJson?: string; prompt?: string },
 ): Promise<string> {
+  // Gemini first (the default voice). Its failure falls through to Groq/Vertex below.
+  const gemKey = (keys.geminiKey || "").trim();
+  if (gemKey) {
+    try {
+      const text = await transcribeWithGemini(blob, gemKey);
+      return text;
+    } catch (err) {
+      console.warn("Gemini transcription failed, using Groq/Vertex:", err);
+    }
+  }
   // The Groq field may hold several keys, one per line; the whole string in the
   // Bearer header broke voice for anyone who pasted more than one.
   const [groqKey] = splitKeys(keys.groqKey);
   const saJson = (keys.vertexSaJson || "").trim();
   if (!groqKey && !saJson) {
     throw new Error(
-      "Voice needs either a Vertex AI service account (recommended) or a Groq API key. Add one in Settings.",
+      "Voice needs a Gemini API key (default), a Vertex AI service account, or a Groq API key. Add one in Settings.",
     );
   }
   if (groqKey) {

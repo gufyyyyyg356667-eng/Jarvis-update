@@ -1,5 +1,5 @@
 import { androidPlatform } from "../brain/platform";
-import { webSpeechTTS } from "../brain/platform/webspeech";
+import { speakReply } from "../brain/platform/voice/geminiSpeak";
 import { listRoutines, routineTurn } from "../brain/schedule/routines";
 import type { ActionSpec, ToolResult } from "../brain/types";
 import { reorderCards, type Action, type GestureConfig } from "./engine";
@@ -47,7 +47,7 @@ export function androidGestureHost(options: HostOptions) {
     },
     manageTimers: () => androidPlatform.clock.showTimers(),
     async speak(text: string) {
-      await webSpeechTTS.speak(text);
+      await speakReply(text);
       return { ok: true, summary: "Read aloud." };
     },
     reorder(from: string, to: string) {

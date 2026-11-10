@@ -53,8 +53,9 @@ import { nativeTvShell, normMac, parseLink, tvAddresses } from "../brain/remote/
 import { RemoteScreen } from "../brain/remote/webrtcScreen";
 import { invoke } from "@tauri-apps/api/core";
 import { authenticate, checkStatus } from "@tauri-apps/plugin-biometric";
-import { webSpeechTTS } from "../brain/platform/webspeech";
 import { MicRecorder, transcribe } from "../brain/platform/stt";
+import { setVoiceConfig, speakReply, stopSpeech as stopVoiceOutput, geminiVoiceOn } from "../brain/platform/voice/geminiSpeak";
+import { LiveVoiceSession, LIVE_MODEL, LIVE_VOICE } from "../brain/platform/voice/liveSession";
 import {
   normalizeWakeSensitivity,
   setWakeSensitivity,
@@ -1437,6 +1438,12 @@ export function useBrain() {
 
   const storedRef = useRef(stored);
   useEffect(() => {
+    setVoiceConfig({ voiceEngine: stored.voiceEngine, geminiKey: stored.geminiKey });
+  }, [stored.voiceEngine, stored.geminiKey]);
+  // Voice out: Gemini speech when chosen (with device-voice fallback), else device voice.
+  const speakOut = useCallback((text) => speakReply(text), []);
+  const stopOut = useCallback(() => stopVoiceOutput(), []);
+  useEffect(() => {
     storedRef.current = stored;
   }, [stored]);
 
@@ -1477,6 +1484,7 @@ export function useBrain() {
       vertex_project: cfg.vertexProject || "",
       has_groq_key: Boolean(stored.groqKey),
       has_gemini_key: Boolean(stored.geminiKey),
+      voice_engine: stored.voiceEngine === "groq" ? "groq" : "gemini",
       has_openrouter_key: Boolean(stored.openrouterKey),
       has_mistral_key: Boolean(stored.mistralKey),
       has_nvidia_key: Boolean(stored.nvidiaKey),
@@ -1534,6 +1542,14 @@ export function useBrain() {
   // Hard ceiling on one push-to-talk recording (see startListen).
   const listenTimerRef = useRef(undefined);
   const finishListenRef = useRef(null);
+  const cancelListenRef = useRef(null);
+  const startListenRef = useRef(null);
+  const liveVoiceRef = useRef(null); // LiveVoiceSession: full voice-to-voice conversation
+  const liveIdleRef = useRef(undefined);
+  const liveUserRef = useRef(null);
+  // True from a "Hey Jarvis" until the user goes quiet: follow-up turns open the mic
+  // by themselves, so the whole session runs by voice with no touch.
+  const wakeSessionRef = useRef(false);
   // The agent row (brain/agents.ts): the picked agent gets what the user types or says
   // while agent mode is on. Not saved — a restart is back on Auto. Composed turns (a
   // routine run, a photo, a shared link: the ones with a `display`) stay with Auto.
@@ -1567,8 +1583,15 @@ export function useBrain() {
         await chat.finish(spoken);
       }
       try {
-        if (!mutedRef.current && spoken) { setStatus("speaking"); await webSpeechTTS.speak(spoken); }
+        if (!mutedRef.current && spoken) { setStatus("speaking"); await speakOut(spoken); }
       } finally { busyRef.current = false; setStatus("idle"); }
+      // Conversation mode: after JARVIS finishes talking, open the mic again for the
+      // follow-up, so no wake word or tap is needed. Silence ends the session.
+      if (!onPc && (storedRef.current?.conversationMode || wakeSessionRef.current) && !mutedRef.current) {
+        setTimeout(() => {
+          if (!busyRef.current && !listeningRef.current) void startListenRef.current?.();
+        }, 400);
+      }
     }, [beginChat],
   );
 
@@ -1917,6 +1940,8 @@ export function useBrain() {
         if (typeof cfg.provider_mode === "string") next.providerMode = cfg.provider_mode.trim();
         if (typeof cfg.conversation_mode === "boolean")
           next.conversationMode = cfg.conversation_mode;
+        if (typeof cfg.voice_engine === "string")
+          next.voiceEngine = cfg.voice_engine === "groq" ? "groq" : "gemini";
         if (typeof cfg.calendar_sync === "boolean") next.calendarSync = cfg.calendar_sync;
         if (typeof cfg.pc_commands === "boolean") next.pcCommands = cfg.pc_commands;
         if (typeof cfg.agent_mode === "boolean") next.agentMode = cfg.agent_mode;
@@ -2190,10 +2215,11 @@ export function useBrain() {
     const v = Boolean(next);
     mutedRef.current = v;
     setMutedState(v);
-    if (v) webSpeechTTS.stop(); // muting mid-sentence cuts current speech
+    if (v) stopOut(); // muting mid-sentence cuts current speech
+    liveVoiceRef.current?.setMuted(v);
   }, []);
   const stopSpeech = useCallback(() => {
-    webSpeechTTS.stop();
+    stopOut();
     setStatus("idle");
   }, []);
 
@@ -2220,21 +2246,111 @@ export function useBrain() {
     );
   }, [taskCenterActive, status, stopAllTasks, stopSpeech, pushWarning]);
 
+  // ── Live voice conversation (Gemini Live, voice in and voice out) ──────────
+  // One session carries the whole spoken exchange. Its function calls run through the
+  // brain's own dispatcher, and each turn is saved to chat like a typed one.
+  const LIVE_IDLE_MS = 45_000;
+  const armLiveIdle = () => {
+    clearTimeout(liveIdleRef.current);
+    liveIdleRef.current = setTimeout(() => {
+      if (!liveVoiceRef.current) return;
+      stopLiveVoice();
+      if (!mutedRef.current) void speakOut("Okay, I'll be here. Say Hey Jarvis when you need me.");
+    }, LIVE_IDLE_MS);
+  };
+  const stopLiveVoice = () => {
+    clearTimeout(liveIdleRef.current);
+    const session = liveVoiceRef.current;
+    liveVoiceRef.current = null;
+    liveUserRef.current = null;
+    listeningRef.current = false;
+    session?.stop();
+    setStatus("idle");
+  };
+  const startLiveVoice = async (initialText) => {
+    if (liveVoiceRef.current?.active) {
+      if (initialText) liveVoiceRef.current.sendText(initialText);
+      return true;
+    }
+    const key = (storedRef.current?.geminiKey || "").trim();
+    if (!key || !brainRef.current) {
+      pushWarning("Live voice needs a Gemini API key. Add one in Settings.");
+      return false;
+    }
+    if (busyRef.current) return false;
+    stopOut();
+    try {
+      const { instruction, tools } = await brainRef.current.voiceSession();
+      const session = new LiveVoiceSession({
+        apiKey: key,
+        model: LIVE_MODEL,
+        voiceName: LIVE_VOICE,
+        instruction,
+        tools,
+        callTool: (name, args) => brainRef.current.liveTool(name, args),
+        onUserText: (text) => {
+          armLiveIdle();
+          liveUserRef.current = text;
+          setStatus("thinking");
+        },
+        onAssistantText: (reply) => {
+          const userText = liveUserRef.current || "(voice)";
+          liveUserRef.current = null;
+          void (async () => {
+            const chat = await beginChat(userText);
+            await chat.finish(reply);
+          })();
+        },
+        onState: (state) => {
+          const map = { connecting: "thinking", listening: "listening", thinking: "thinking", speaking: "speaking", idle: "idle" };
+          setStatus(map[state] || "idle");
+        },
+        onError: (msg) => pushWarning(msg),
+        onClosed: () => {
+          if (liveVoiceRef.current === session) stopLiveVoice();
+        },
+      });
+      liveVoiceRef.current = session;
+      listeningRef.current = true;
+      setStatus("listening");
+      await session.start();
+      session.setMuted(mutedRef.current);
+      if (initialText) session.sendText(initialText);
+      armLiveIdle();
+      return true;
+    } catch (e) {
+      liveVoiceRef.current = null;
+      listeningRef.current = false;
+      setStatus("idle");
+      pushWarning("Couldn't start live voice: " + (e?.message || e));
+      return false;
+    }
+  };
+
   // ── Voice input (push-to-talk → mic → Groq Whisper → brain) ────────────────
   const startListen = useCallback(async () => {
     if (busyRef.current || listeningRef.current || listenStartingRef.current) return false;
-    if (!stored.groqKey && !stored.vertexSaJson) {
+    if (!stored.groqKey && !stored.vertexSaJson && !stored.geminiKey) {
       pushWarning(
-        "Voice input needs either a Vertex AI Service Account or Groq API key. Add one in Settings.",
+        "Voice input needs a Gemini API key (default), a Vertex AI Service Account, or a Groq API key. Add one in Settings.",
       );
       return false;
     }
     const generation = ++listenGenerationRef.current;
     listenStartingRef.current = true;
+    if (geminiVoiceOn({ voiceEngine: stored.voiceEngine, geminiKey: stored.geminiKey })) {
+      listenStartingRef.current = false;
+      return startLiveVoice();
+    }
     try {
-      webSpeechTTS.stop(); // don't record JARVIS talking over you
+      stopOut(); // don't record JARVIS talking over you
       if (!micRef.current) micRef.current = new MicRecorder();
-      await micRef.current.start();
+      await micRef.current.start({
+        silenceMs: 1200, // quiet this long after speaking → send by itself
+        noSpeechMs: 6000, // nothing said → drop quietly, no transcription
+        onSilence: () => void finishListenRef.current?.(),
+        onNoSpeech: () => endWakeSessionRef.current?.(),
+      });
       if (generation !== listenGenerationRef.current) {
         await micRef.current.stop();
         return false;
@@ -2260,21 +2376,37 @@ export function useBrain() {
     // vertexSaJson is read above but was missing here, so a Vertex-only user (who
     // never gets a Groq key) kept the pre-hydration closure all session and the mic
     // refused to start.
-  }, [stored.groqKey, stored.vertexSaJson, pushWarning]);
+  }, [stored.groqKey, stored.vertexSaJson, stored.voiceEngine, stored.geminiKey, pushWarning, sendMessage]);
 
   const cancelListen = useCallback(async () => {
     listenGenerationRef.current++;
     clearTimeout(listenTimerRef.current);
     const wasListening = listeningRef.current;
     listeningRef.current = false;
+    if (liveVoiceRef.current) stopLiveVoice();
     if (wasListening && micRef.current) {
       try { await micRef.current.stop(); } catch { /* Discard, never transcribe. */ }
     }
     if (wasListening && !busyRef.current) setStatus("idle");
   }, []);
 
+  // The session ends when the user goes quiet: say so, then wait for "Hey Jarvis".
+  const endWakeSessionRef = useRef(null);
+  endWakeSessionRef.current = () => {
+    const wasSession = wakeSessionRef.current;
+    wakeSessionRef.current = false;
+    void cancelListenRef.current?.();
+    if (wasSession && !mutedRef.current) {
+      void speakOut("Okay, say Hey Jarvis when you need me.");
+    }
+  };
+
   // Stop recording, transcribe, and send the recognised text as a turn.
   const finishListen = useCallback(async () => {
+    if (liveVoiceRef.current) {
+      stopLiveVoice(); // tapping while the live conversation runs ends it
+      return;
+    }
     if (!listeningRef.current || !micRef.current) return;
     clearTimeout(listenTimerRef.current);
     listeningRef.current = false;
@@ -2285,12 +2417,13 @@ export function useBrain() {
     } catch {
       /* ignore */
     }
-    if (!blob || (!stored.groqKey && !stored.vertexSaJson)) {
+    if (!blob || (!stored.groqKey && !stored.vertexSaJson && !stored.geminiKey)) {
       setStatus("idle");
       return;
     }
     try {
       const text = await transcribe(blob, {
+        geminiKey: stored.geminiKey,
         groqKey: stored.groqKey,
         vertexSaJson: stored.vertexSaJson,
       });
@@ -2309,6 +2442,10 @@ export function useBrain() {
   useEffect(() => {
     finishListenRef.current = finishListen;
   }, [finishListen]);
+  useEffect(() => {
+    cancelListenRef.current = cancelListen;
+    startListenRef.current = startListen;
+  }, [cancelListen, startListen]);
 
   // Tap-to-talk: first tap starts listening, second tap stops + sends.
   const triggerListen = useCallback(() => {
@@ -2341,12 +2478,13 @@ export function useBrain() {
     // mid-flight, so start_wake_word never dispatched). syncWakeWord() is idempotent
     // by config signature — calling it every render is fine — and turns the engine
     // off itself when the toggle/keys go away (opts=null below).
+    const gemKey = (stored.geminiKey || "").trim();
     const wanted =
-      alwaysOn && (groqKey || saJson)
+      alwaysOn && (groqKey || saJson || gemKey)
         ? {
             groqKey,
             vertexSaJson: saJson,
-            transcribe: (blob, o) => transcribe(blob, { groqKey, vertexSaJson: saJson, ...o }),
+            transcribe: (blob, o) => transcribe(blob, { geminiKey: gemKey, groqKey, vertexSaJson: saJson, ...o }),
             isBusy: () => busyRef.current || listeningRef.current,
             onStatus: (s) => {
               if (s === "listening") setStatus("listening");
@@ -2354,7 +2492,25 @@ export function useBrain() {
             },
             onCommand: (text) => {
               setWakeTriggered((n) => n + 1);
-              void sendMessage(text);
+              wakeSessionRef.current = true;
+              if (geminiVoiceOn({ voiceEngine: storedRef.current?.voiceEngine, geminiKey: gemKey })) {
+                void startLiveVoice(text);
+              } else {
+                void sendMessage(text);
+              }
+            },
+            onWakeOnly: () => {
+              setWakeTriggered((n) => n + 1);
+              wakeSessionRef.current = true;
+              if (geminiVoiceOn({ voiceEngine: storedRef.current?.voiceEngine, geminiKey: gemKey })) {
+                void startLiveVoice("The user just said your name. Reply with one short word such as 'Yes?' and wait for them to speak.");
+              } else {
+                setStatus("listening");
+                void (async () => {
+                  if (!mutedRef.current) await speakOut("Yes?");
+                  if (wakeSessionRef.current) void startListenRef.current?.();
+                })();
+              }
             },
             onError: (msg) => pushWarning(`Wake word: ${msg}`),
             onFatal: (msg) => pushWarning(`“Hey Jarvis” stopped: ${msg}`),
@@ -2370,7 +2526,7 @@ export function useBrain() {
     if (mutedRef.current || !text) return;
     try {
       setStatus("speaking");
-      await webSpeechTTS.speak(text);
+      await speakOut(text);
     } finally {
       if (!busyRef.current && !listeningRef.current) setStatus("idle");
     }
