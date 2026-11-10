@@ -2322,8 +2322,10 @@ export function useBrain() {
   };
 
   // ── Voice input (push-to-talk → mic → Groq Whisper → brain) ────────────────
-  startLiveVoiceRef.current = startLiveVoice;
-  stopLiveVoiceRef.current = stopLiveVoice;
+  useEffect(() => {
+    startLiveVoiceRef.current = startLiveVoice;
+    stopLiveVoiceRef.current = stopLiveVoice;
+  });
 
   // Speech input is the live Gemini conversation. Tapping the mic starts it, and a
   // second tap (or silence in the session) ends it.
@@ -2343,14 +2345,16 @@ export function useBrain() {
 
   // The session ends when the user goes quiet: say so, then wait for "Hey Jarvis".
   const endWakeSessionRef = useRef(null);
-  endWakeSessionRef.current = () => {
-    const wasSession = wakeSessionRef.current;
-    wakeSessionRef.current = false;
-    void cancelListenRef.current?.();
-    if (wasSession && !mutedRef.current) {
-      void speakOut("Okay, say Hey Jarvis when you need me.");
-    }
-  };
+  useEffect(() => {
+    endWakeSessionRef.current = () => {
+      const wasSession = wakeSessionRef.current;
+      wakeSessionRef.current = false;
+      void cancelListenRef.current?.();
+      if (wasSession && !mutedRef.current) {
+        void speakOut("Okay, say Hey Jarvis when you need me.");
+      }
+    };
+  });
 
   const finishListen = useCallback(async () => {
     if (liveVoiceRef.current) stopLiveVoiceRef.current?.();
