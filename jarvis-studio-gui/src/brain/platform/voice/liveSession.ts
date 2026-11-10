@@ -49,7 +49,7 @@ export interface LiveSessionOptions {
 }
 
 /** Live model and voice. Verify both against Google's model and voice lists. */
-export const LIVE_MODEL = "gemini-live-2.5-flash-native-audio";
+export const LIVE_MODEL = "gemini-3.1-flash-live-preview";
 export const LIVE_VOICE = "Kore";
 
 const LIVE_WS =
@@ -132,11 +132,8 @@ export class LiveVoiceSession {
   sendText(text: string): void {
     const t = text.trim();
     if (!t || !this.isOpen()) return;
-    this.ws?.send(
-      JSON.stringify({
-        clientContent: { turns: [{ role: "user", parts: [{ text: t }] }], turnComplete: true },
-      }),
-    );
+    // Gemini 3.1 Live takes text updates through realtimeInput (clientContent is history-only).
+    this.ws?.send(JSON.stringify({ realtimeInput: { text: t } }));
   }
 
   stop(): void {
