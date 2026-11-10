@@ -2433,7 +2433,7 @@ export function useBrain() {
     } finally {
       if (!busyRef.current && !listeningRef.current) setStatus("idle");
     }
-  }, []);
+  }, [speakOut]);
 
   // ── Greeting ────────────────────────────────────────────────────────────────
   // JARVIS introduces himself once, as soon as a key is configured (desktop greets
