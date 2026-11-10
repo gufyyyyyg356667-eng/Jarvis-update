@@ -11,8 +11,17 @@ export const GEMINI_STT_MODELS = ["gemini-flash-latest", "gemini-3.1-flash-lite-
 const URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
 const INSTRUCTION =
-  "Transcribe this audio exactly as spoken, in the language it is spoken in. " +
+  "Transcribe this audio exactly as spoken. The speaker's main language is Bengali (Bangla). " +
+  "Bengali can sound close to Hindi: if the speech could be either, it is Bengali. Write it as " +
+  "Hindi (Devanagari) only when the speaker clearly speaks Hindi. The speaker may also use " +
+  "English, or mix languages in one sentence. Write Bengali in Bengali script and English in " +
+  "Latin letters. A wake phrase such as 'Hey Jarvis' may appear in any script " +
+  "(for example হে জার্ভিস or हे जार्विस); write it as spoken. " +
   "Output only the transcript, with no quotes or commentary. If there is no speech, output nothing.";
+
+/** Answers that mean "busy right now, try again" rather than "this model is gone". */
+const BUSY = new Set([429, 500, 503, 504]);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface GeminiTextResponse {
   candidates?: { content?: { parts?: { text?: string }[] } }[];
@@ -46,19 +55,24 @@ export async function transcribeWithGemini(blob: Blob, apiKey: string): Promise<
   });
   let lastStatus = 0;
   for (const model of GEMINI_STT_MODELS) {
-    const res = await fetch(`${URL_BASE}/${model}:generateContent`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body,
-    });
-    if (res.status === 404) {
-      lastStatus = 404;
-      continue; // this model is retired on the API; try the next one
+    // Busy answers (503 overloaded, 429 rate limit) are retried with a short wait.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await fetch(`${URL_BASE}/${model}:generateContent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body,
+      });
+      lastStatus = res.status;
+      if (res.status === 404) break; // retired on the API: try the next model
+      if (BUSY.has(res.status)) {
+        await sleep(800 * (attempt + 1));
+        continue;
+      }
+      if (!res.ok) throw new Error(`Gemini transcription failed (HTTP ${res.status}).`);
+      const json = (await res.json()) as GeminiTextResponse;
+      const parts = json.candidates?.[0]?.content?.parts ?? [];
+      return parts.map((p) => p.text ?? "").join("").trim();
     }
-    if (!res.ok) throw new Error(`Gemini transcription failed (HTTP ${res.status}).`);
-    const json = (await res.json()) as GeminiTextResponse;
-    const parts = json.candidates?.[0]?.content?.parts ?? [];
-    return parts.map((p) => p.text ?? "").join("").trim();
   }
-  throw new Error(`Gemini transcription failed (HTTP ${lastStatus}): no listed model is available.`);
+  throw new Error(`Gemini transcription failed (HTTP ${lastStatus}). Gemini is busy or unavailable; try again.`);
 }
