@@ -8,6 +8,31 @@
 
 export type LiveState = "connecting" | "listening" | "thinking" | "speaking" | "idle";
 
+/** The parts of Gemini Live's server messages that this file reads. */
+interface LivePart {
+  text?: string;
+  inlineData?: { data?: string; mimeType?: string };
+}
+interface LiveFunctionCall {
+  id?: string;
+  name?: string;
+  args?: Record<string, unknown>;
+}
+interface LiveServerContent {
+  interrupted?: boolean;
+  turnComplete?: boolean;
+  modelTurn?: { parts?: LivePart[] };
+  inputTranscription?: { text?: string };
+  outputTranscription?: { text?: string };
+}
+interface LiveMessage {
+  setupComplete?: unknown;
+  goAway?: unknown;
+  error?: { message?: string };
+  toolCall?: { functionCalls?: LiveFunctionCall[] };
+  serverContent?: LiveServerContent;
+}
+
 export interface LiveSessionOptions {
   apiKey: string;
   model: string;
@@ -184,7 +209,7 @@ export class LiveVoiceSession {
 
   private async onMessage(data: unknown): Promise<void> {
     const text = typeof data === "string" ? data : await (data as Blob).text();
-    let msg: any;
+    let msg: LiveMessage;
     try {
       msg = JSON.parse(text);
     } catch {
@@ -215,7 +240,7 @@ export class LiveVoiceSession {
       this.stopPlayback(); // barge-in: the user spoke over JARVIS
       this.setState("listening");
     }
-    const parts: any[] = sc.modelTurn?.parts ?? [];
+    const parts: LivePart[] = sc.modelTurn?.parts ?? [];
     for (const part of parts) {
       const audio = part.inlineData?.data;
       if (audio && String(part.inlineData?.mimeType || "").startsWith("audio/")) {
@@ -234,7 +259,7 @@ export class LiveVoiceSession {
     }
   }
 
-  private async runCalls(calls: any[]): Promise<void> {
+  private async runCalls(calls: LiveFunctionCall[]): Promise<void> {
     const responses = [];
     for (const call of calls) {
       let response: unknown;

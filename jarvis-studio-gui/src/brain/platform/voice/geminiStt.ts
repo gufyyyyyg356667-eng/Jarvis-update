@@ -13,6 +13,10 @@ const INSTRUCTION =
   "Transcribe this audio exactly as spoken, in the language it is spoken in. " +
   "Output only the transcript, with no quotes or commentary. If there is no speech, output nothing.";
 
+interface GeminiTextResponse {
+  candidates?: { content?: { parts?: { text?: string }[] } }[];
+}
+
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -42,7 +46,7 @@ export async function transcribeWithGemini(blob: Blob, apiKey: string): Promise<
     }),
   });
   if (!res.ok) throw new Error(`Gemini transcription failed (HTTP ${res.status}).`);
-  const json: any = await res.json();
-  const parts: any[] = json?.candidates?.[0]?.content?.parts ?? [];
+  const json = (await res.json()) as GeminiTextResponse;
+  const parts = json.candidates?.[0]?.content?.parts ?? [];
   return parts.map((p) => p.text ?? "").join("").trim();
 }

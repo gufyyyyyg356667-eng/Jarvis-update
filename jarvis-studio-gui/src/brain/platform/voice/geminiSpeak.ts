@@ -50,8 +50,10 @@ export async function fetchGeminiSpeech(text: string, apiKey: string): Promise<U
     }),
   });
   if (!res.ok) throw new Error(`Gemini speech failed (HTTP ${res.status}).`);
-  const data: any = await res.json();
-  const b64 = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+  const data = (await res.json()) as {
+    candidates?: { content?: { parts?: { inlineData?: { data?: string } }[] } }[];
+  };
+  const b64 = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
   if (!b64) throw new Error("Gemini speech returned no audio.");
   return base64ToBytes(b64);
 }
