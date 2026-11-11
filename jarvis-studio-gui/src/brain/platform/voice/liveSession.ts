@@ -26,6 +26,7 @@ interface LiveServerContent {
   outputTranscription?: { text?: string };
 }
 interface LiveMessage {
+  sessionResumptionUpdate?: { newHandle?: string; resumable?: boolean };
   setupComplete?: unknown;
   goAway?: unknown;
   error?: { message?: string };
@@ -45,6 +46,8 @@ export interface LiveSessionOptions {
   onAssistantText?: (text: string) => void;
   onState?: (state: LiveState) => void;
   onError?: (message: string) => void;
+  /** Short status notes, such as "reconnecting". */
+  onNotice?: (message: string) => void;
   onClosed?: () => void;
 }
 
@@ -58,6 +61,7 @@ const MIC_RATE = 16000;
 const SPEAKER_RATE = 24000;
 const MAX_RECONNECTS = 3;
 const MAX_TOOL_TEXT = 4000;
+const TOOL_LIMIT_MS = 120000;
 
 function float32ToPcm16Base64(input: Float32Array): string {
   const bytes = new Uint8Array(input.length * 2);
@@ -103,6 +107,8 @@ export class LiveVoiceSession {
   private stopped = false;
   private muted = false;
   private reconnects = 0;
+  /** Gemini's resumption handle: lets a dropped connection pick up the same conversation. */
+  private resumeHandle: string | null = null;
   private userBuf = "";
   private assistantBuf = "";
   private state: LiveState = "connecting";
@@ -177,6 +183,10 @@ export class LiveVoiceSession {
               speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.opts.voiceName } } },
             },
             systemInstruction: { parts: [{ text: this.opts.instruction }] },
+            // Resume the same conversation after a dropped connection.
+            sessionResumption: this.resumeHandle ? { handle: this.resumeHandle } : {},
+            // Drop the oldest context once it is long, so long conversations keep going.
+            contextWindowCompression: { slidingWindow: {} },
             ...(this.opts.tools.length ? { tools: this.opts.tools } : {}),
             inputAudioTranscription: {},
             outputAudioTranscription: {},
@@ -194,6 +204,7 @@ export class LiveVoiceSession {
       if (this.reconnects < MAX_RECONNECTS) {
         this.reconnects++;
         this.setState("connecting");
+        this.opts.onNotice?.("Connection dropped. Reconnecting and keeping our conversation...");
         setTimeout(() => {
           if (!this.stopped) this.connect();
         }, 800 * this.reconnects);
@@ -212,6 +223,8 @@ export class LiveVoiceSession {
     } catch {
       return;
     }
+    const update = msg.sessionResumptionUpdate;
+    if (update?.newHandle && update.resumable !== false) this.resumeHandle = update.newHandle;
     if (msg.setupComplete) {
       this.ready = true;
       this.reconnects = 0;
@@ -261,7 +274,12 @@ export class LiveVoiceSession {
     for (const call of calls) {
       let response: unknown;
       try {
-        response = { result: clip(await this.opts.callTool(String(call.name), call.args ?? {})) };
+        // Multi-step work can take a while; a hard limit keeps the conversation from hanging.
+        const work = this.opts.callTool(String(call.name), call.args ?? {});
+        const limit = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("That took too long. Try again or make it smaller.")), TOOL_LIMIT_MS),
+        );
+        response = { result: clip(await Promise.race([work, limit])) };
       } catch (err) {
         response = { error: (err as Error)?.message || String(err) };
       }

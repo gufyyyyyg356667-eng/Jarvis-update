@@ -2283,7 +2283,10 @@ export function useBrain() {
         voiceName: LIVE_VOICE,
         instruction,
         tools,
-        callTool: (name, args) => brainRef.current.liveTool(name, args),
+        callTool: (name, args) =>
+          name === "delegate_task"
+            ? brainRef.current.ask(String(args?.goal ?? "")).then((answer) => ({ answer }))
+            : brainRef.current.liveTool(name, args),
         onUserText: (text) => {
           armLiveIdle();
           liveUserRef.current = text;
@@ -2302,6 +2305,7 @@ export function useBrain() {
           setStatus(map[state] || "idle");
         },
         onError: (msg) => pushWarning(msg),
+        onNotice: (msg) => pushWarning(msg),
         onClosed: () => {
           if (liveVoiceRef.current === session) stopLiveVoice();
         },
