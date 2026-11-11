@@ -200,6 +200,16 @@ export class LiveVoiceSession {
             ...(this.opts.tools.length ? { tools: this.opts.tools } : {}),
             inputAudioTranscription: {},
             outputAudioTranscription: {},
+            // Wait for a real pause before deciding the user has finished, so short
+            // breaks inside a sentence do not cut the question in half.
+            realtimeInputConfig: {
+              automaticActivityDetection: {
+                startOfSpeechSensitivity: "START_SENSITIVITY_LOW",
+                endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
+                prefixPaddingMs: 300,
+                silenceDurationMs: 1200,
+              },
+            },
           },
         }),
       );
