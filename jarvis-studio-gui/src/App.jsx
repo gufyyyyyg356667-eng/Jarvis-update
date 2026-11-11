@@ -102,6 +102,8 @@ export default function App() {
   const showQuickStart = IS_MOBILE && quickStart.open;
   const {
     status,
+    liveHeard,
+    liveTool,
     messages,
     warnings,
     sysInfo,
@@ -995,6 +997,8 @@ export default function App() {
           onOpenHandsFree={openHandsFree}
           screen={screen}
           status={status}
+          liveHeard={liveHeard}
+          liveTool={liveTool}
           activeTask={unifiedTasks.find((t) => ACTIVE_TASK_STATES.has(t.status))}
           telemetry={telemetry}
           weather={weather}

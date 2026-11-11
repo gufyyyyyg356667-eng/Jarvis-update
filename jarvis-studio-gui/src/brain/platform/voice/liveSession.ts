@@ -42,6 +42,8 @@ export interface LiveSessionOptions {
   tools: Record<string, unknown>[];
   /** Runs one function call through the brain. Its result is sent back to the model. */
   callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+  /** The user's words so far, while they are still speaking. */
+  onUserPartial?: (text: string) => void;
   onUserText?: (text: string) => void;
   onAssistantText?: (text: string) => void;
   onState?: (state: LiveState) => void;
@@ -258,7 +260,10 @@ export class LiveVoiceSession {
         this.playChunk(base64ToFloat32(audio));
       }
     }
-    if (sc.inputTranscription?.text) this.userBuf += sc.inputTranscription.text;
+    if (sc.inputTranscription?.text) {
+      this.userBuf += sc.inputTranscription.text;
+      this.opts.onUserPartial?.(this.userBuf.trim());
+    }
     if (sc.outputTranscription?.text) this.assistantBuf += sc.outputTranscription.text;
     if (sc.turnComplete || sc.interrupted) {
       if (this.userBuf.trim()) this.opts.onUserText?.(this.userBuf.trim());

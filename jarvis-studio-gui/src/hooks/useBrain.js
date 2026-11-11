@@ -315,10 +315,17 @@ function isPrivateLanHost(host) {
   return false; // includes 100.64/10 (Tailscale) and all public IPs
 }
 
+/** What JARVIS shows while a live tool runs, in plain words. */
+const LIVE_TOOL_LABEL = {
+  delegate_task: "Working on it…",
+};
+
 export function useBrain() {
   const [stored, setStored] = useState(loadStored);
   const [secretsReady, setSecretsReady] = useState(() => !inTauri());
   const [status, setStatus] = useState("idle");
+  const [liveHeard, setLiveHeard] = useState(""); // what the user is saying, while they speak
+  const [liveTool, setLiveTool] = useState(""); // what JARVIS is doing right now, in a live turn
   const [messages, setMessages] = useState([]);
   const [conversationHydrated, setConversationHydrated] = useState(false);
   const [warnings, setWarnings] = useState([]);
@@ -2255,6 +2262,8 @@ export function useBrain() {
   };
   const stopLiveVoice = () => {
     clearTimeout(liveIdleRef.current);
+    setLiveHeard("");
+    setLiveTool("");
     const session = liveVoiceRef.current;
     liveVoiceRef.current = null;
     liveUserRef.current = null;
@@ -2283,10 +2292,17 @@ export function useBrain() {
         voiceName: LIVE_VOICE,
         instruction,
         tools,
-        callTool: (name, args) =>
-          name === "delegate_task"
-            ? brainRef.current.ask(String(args?.goal ?? "")).then((answer) => ({ answer }))
-            : brainRef.current.liveTool(name, args),
+        callTool: async (name, args) => {
+          setLiveTool(LIVE_TOOL_LABEL[name] || `Doing: ${String(name).replace(/_/g, " ")}`);
+          try {
+            return name === "delegate_task"
+              ? { answer: await brainRef.current.ask(String(args?.goal ?? "")) }
+              : await brainRef.current.liveTool(name, args);
+          } finally {
+            setLiveTool("");
+          }
+        },
+        onUserPartial: (text) => setLiveHeard(text),
         onUserText: (text) => {
           armLiveIdle();
           liveUserRef.current = text;
@@ -2739,6 +2755,8 @@ export function useBrain() {
   // that have no phone meaning (yet) return inert defaults.
   return {
     status,
+    liveHeard,
+    liveTool,
     messages,
     warnings,
     sysInfo,

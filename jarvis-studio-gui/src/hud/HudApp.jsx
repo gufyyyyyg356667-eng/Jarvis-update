@@ -154,6 +154,8 @@ export function JarvisHUD({
   toolbar, // the quick controls (App owns their state)
   // live data
   status = "idle",
+  liveHeard = "", // the user's words, while they are still speaking
+  liveTool = "", // what JARVIS is doing in a live turn
   activeTask, // a running task {goal}, if any
   telemetry,
   weather,
@@ -434,7 +436,13 @@ export function JarvisHUD({
               {title}
             </div>
             <div className="hero-hint">
-              {shownStatus === "working" && activeTask?.goal ? activeTask.goal : hint}
+              {shownStatus === "working" && activeTask?.goal
+                ? activeTask.goal
+                : liveTool
+                  ? liveTool
+                  : shownStatus === "listening" && liveHeard
+                    ? `“${liveHeard}”`
+                    : hint}
             </div>
           </div>
 
