@@ -1,11 +1,21 @@
 name: Build APK
+# Runs by itself after CI passes on main, and still by hand from the Actions tab.
 on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 jobs:
   build:
+    # After a CI run: only when CI passed. A manual run always builds.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Build the exact commit CI tested, not whatever main points to by now.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
