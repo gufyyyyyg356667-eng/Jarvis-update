@@ -321,6 +321,9 @@ export class LiveVoiceSession {
     const proc = ctx.createScriptProcessor(4096, 1, 1);
     proc.onaudioprocess = (e) => {
       if (!this.ready || !this.isOpen() || this.muted) return;
+      // Do not send the microphone while JARVIS is talking. Its own voice would come back
+      // through the mic and be heard as a new question, so it would answer itself.
+      if (this.assistantSpeaking()) return;
       const data = float32ToPcm16Base64(e.inputBuffer.getChannelData(0));
       this.ws?.send(JSON.stringify({ realtimeInput: { audio: { mimeType: `audio/pcm;rate=${MIC_RATE}`, data } } }));
     };
@@ -350,6 +353,13 @@ export class LiveVoiceSession {
 
   private playingNow(): boolean {
     return this.sources.size > 0;
+  }
+
+  /** True while the speaker is playing, plus a short tail so the echo has died away. */
+  private assistantSpeaking(): boolean {
+    if (this.sources.size > 0) return true;
+    const ctx = this.playCtx;
+    return !!ctx && ctx.currentTime < this.playAt + 0.4;
   }
 
   private stopPlayback(): void {
