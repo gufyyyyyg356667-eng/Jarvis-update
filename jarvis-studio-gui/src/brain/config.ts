@@ -5,6 +5,8 @@
 import type { ProviderTier } from "./types";
 
 export interface BrainConfig {
+  /** The name the assistant introduces itself with. Defaults to JARVIS. */
+  assistantName?: string;
   tier: ProviderTier;
   model: string;
   /** True when the user selected Auto rather than pinning a particular model.

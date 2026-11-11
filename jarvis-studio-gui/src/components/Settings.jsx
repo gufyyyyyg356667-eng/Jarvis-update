@@ -352,6 +352,7 @@ export default function Settings({
     sysInfo.provider_mode || (IS_MOBILE ? "auto" : "groq"),
   );
   const [wakeWordOn, setWakeWordOn] = useState(sysInfo.wake_word !== false);
+  const [assistantName, setAssistantName] = useState(sysInfo.assistant_name || "JARVIS");
   const [wakeSensitivity, setWakeSensitivity] = useState(
     normalizeWakeSensitivity(sysInfo.wake_sensitivity),
   );
@@ -474,6 +475,7 @@ export default function Settings({
     };
     cfg.auto_switch_models = autoSwitch;
     if (IS_MOBILE) cfg.wake_word = wakeWordOn;
+    cfg.assistant_name = assistantName.trim().slice(0, 20) || "JARVIS";
     if (IS_MOBILE) cfg.wake_sensitivity = wakeSensitivity;
     if (IS_MOBILE) {
       cfg.pc_commands = pcCommands;
@@ -956,6 +958,16 @@ export default function Settings({
               onChange={setWakeWordOn}
               hint="Listens on the phone itself. Nothing is sent until it hears the wake word."
             />
+            <Field label="Assistant name">
+              <input
+                aria-label="Assistant name"
+                type="text"
+                maxLength={20}
+                value={assistantName}
+                onChange={(event) => setAssistantName(event.target.value)}
+                placeholder="JARVIS"
+              />
+            </Field>
             <Field label={`Wake word sensitivity: ${wakeSensitivity}`}>
               <input
                 aria-label="Wake word sensitivity"

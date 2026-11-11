@@ -106,6 +106,8 @@ export class LiveVoiceSession {
   private playAt = 0;
   private sources = new Set<AudioBufferSourceNode>();
   private ready = false;
+  /** Text sent before the session was ready (for example the wake greeting). */
+  private pending: string[] = [];
   private stopped = false;
   private muted = false;
   private reconnects = 0;
@@ -139,7 +141,13 @@ export class LiveVoiceSession {
   /** Send typed or wake-command text into the live conversation. */
   sendText(text: string): void {
     const t = text.trim();
-    if (!t || !this.isOpen()) return;
+    if (!t) return;
+    // Before the session is ready (the wake word fires first), hold the text and send it then.
+    if (!this.ready) {
+      this.pending.push(t);
+      return;
+    }
+    if (!this.isOpen()) return;
     // Gemini 3.1 Live takes text updates through realtimeInput (clientContent is history-only).
     this.ws?.send(JSON.stringify({ realtimeInput: { text: t } }));
   }
@@ -231,6 +239,7 @@ export class LiveVoiceSession {
       this.ready = true;
       this.reconnects = 0;
       this.setState("listening");
+      for (const t of this.pending.splice(0)) this.sendText(t);
       return;
     }
     if (msg.error) {

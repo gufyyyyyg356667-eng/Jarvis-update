@@ -271,6 +271,7 @@ function toBrainConfig(stored) {
   const cfg = resolveBrainConfig(stored);
   return {
     ...cfg,
+    assistantName: stored.assistantName || "JARVIS",
     conversationMode: Boolean(stored.conversationMode),
     // Absent means on: mirroring is the default, opting out is the deliberate act.
     calendarSync: stored.calendarSync !== false,
@@ -1500,6 +1501,7 @@ export function useBrain() {
       // raw: a provider whose key was removed reads back as auto.
       provider_mode: cfg.providerScope || "auto",
       wake_word: stored.wakeWord !== false,
+      assistant_name: stored.assistantName || "JARVIS",
       wake_sensitivity: normalizeWakeSensitivity(stored.wakeSensitivity),
       auto_switch_models: stored.autoSwitchModels !== false,
       tts: "android",
@@ -1944,6 +1946,8 @@ export function useBrain() {
         if (typeof cfg.provider_mode === "string") next.providerMode = cfg.provider_mode.trim();
         if (typeof cfg.conversation_mode === "boolean")
           next.conversationMode = cfg.conversation_mode;
+        if (typeof cfg.assistant_name === "string")
+          next.assistantName = cfg.assistant_name.trim().slice(0, 20) || "JARVIS";
         if (typeof cfg.calendar_sync === "boolean") next.calendarSync = cfg.calendar_sync;
         if (typeof cfg.pc_commands === "boolean") next.pcCommands = cfg.pc_commands;
         if (typeof cfg.agent_mode === "boolean") next.agentMode = cfg.agent_mode;
